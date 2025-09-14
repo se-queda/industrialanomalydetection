@@ -18,10 +18,12 @@ def collect_image_paths(root_dir, mode="train", categories=None):
             img_dir = os.path.join(folder, 'train', 'good')
             for fname in os.listdir(img_dir):
                 img_path = os.path.join(img_dir, fname)
-                data.append((img_path, 0))
+                # For training, use an empty string as a placeholder for the mask path
+                data.append((img_path, 0, ""))
 
         elif mode == "test":
             test_dir = os.path.join(folder, 'test')
+            mask_dir = os.path.join(folder, 'ground_truth')
             for subfolder in os.listdir(test_dir):
                 defect_dir = os.path.join(test_dir, subfolder)
                 if not os.path.isdir(defect_dir):
@@ -29,55 +31,66 @@ def collect_image_paths(root_dir, mode="train", categories=None):
                 label = 0 if subfolder == "good" else 1
                 for fname in os.listdir(defect_dir):
                     img_path = os.path.join(defect_dir, fname)
-                    data.append((img_path, label))
+                    # Use an empty string for good samples with no mask
+                    if subfolder == "good":
+                        mask_path = ""
+                    else:
+                        mask_fname = fname.replace('.png', '_mask.png')
+                        mask_path = os.path.join(mask_dir, subfolder, mask_fname)
+
+                    data.append((img_path, label, mask_path))
 
         print(f"[DEBUG] Collected {len(data)} samples for category '{category}' in mode '{mode}'")
     return data
 
 
-def image_parser(image_path, label):
+def image_parser(image_path, label, mask_path):
+    # Load and process the image
     img = tf.io.read_file(image_path)
-    img = tf.image.decode_image(img, channels=CHANNELS, expand_animations=False)
+    img = tf.image.decode_png(img, channels=CHANNELS)
     img = tf.image.resize(img, [IMG_SIZE, IMG_SIZE])
     img = tf.cast(img, tf.float32) / 127.5 - 1.0  # Normalize to [-1, 1]
-    return img, label
+
+    # Conditionally load the mask based on the path
+    def read_mask():
+        mask = tf.io.read_file(mask_path)
+        mask = tf.image.decode_png(mask, channels=1)
+        mask = tf.image.resize(mask, [IMG_SIZE, IMG_SIZE], method='nearest')
+        return tf.cast(mask > 0, dtype=tf.uint8)
+
+    def empty_mask():
+        return tf.zeros([IMG_SIZE, IMG_SIZE, 1], dtype=tf.uint8)
+
+    # Use tf.cond for conditional logic inside a tf.function
+    mask = tf.cond(tf.equal(mask_path, ""), empty_mask, read_mask)
+
+    return img, label, mask
 
 
-def augmentor(image, label):
+def augmentor(image, label, mask):
     image = tf.image.random_flip_left_right(image)
     image = tf.image.random_brightness(image, max_delta=0.1)
     image = tf.image.random_contrast(image, lower=0.9, upper=1.1)
-    # The 'adjust_jpeg_quality' is often slow and provides little benefit.
-    # Consider removing it if you need more speed.
-    # image = tf.image.adjust_jpeg_quality(
-    #     image, jpeg_quality=tf.random.uniform([], 90, 100, dtype=tf.int32)
-    # )
     image = tf.clip_by_value(image, -1.0, 1.0)
-    return image, label
+    return image, label, mask
 
 
 def get_dataset(root_dir, categories=None, mode="train", augment=False, batch_size=32, cache=True):
-    samples = collect_image_paths(root_dir, mode, categories)
-    paths, labels = zip(*samples)
+    paths, labels, mask_paths = zip(*collect_image_paths(root_dir, mode, categories))
 
-    ds = tf.data.Dataset.from_tensor_slices((list(paths), list(labels)))
+    ds = tf.data.Dataset.from_tensor_slices((list(paths), list(labels), list(mask_paths)))
 
-    # For training, shuffle the file paths before you do anything else.
     if mode == "train":
         ds = ds.shuffle(buffer_size=len(paths))
 
-    # Decode and resize the images in parallel.
     ds = ds.map(image_parser, num_parallel_calls=AUTOTUNE)
 
-    # Cache the dataset after loading and resizing. Subsequent epochs will be much faster.
     if cache:
         ds = ds.cache()
 
-    # Apply random augmentations after caching.
     if augment and mode == "train":
         ds = ds.map(augmentor, num_parallel_calls=AUTOTUNE)
 
-    # Batch the data and prefetch to keep the GPU fed.
     ds = ds.batch(batch_size)
     ds = ds.prefetch(AUTOTUNE)
 
