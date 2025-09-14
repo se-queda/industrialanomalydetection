@@ -47,28 +47,37 @@ def augmentor(image, label):
     image = tf.image.random_flip_left_right(image)
     image = tf.image.random_brightness(image, max_delta=0.1)
     image = tf.image.random_contrast(image, lower=0.9, upper=1.1)
-    image = tf.image.adjust_jpeg_quality(
-        image, jpeg_quality=tf.random.uniform([], 90, 100, dtype=tf.int32)
-    )
+    # The 'adjust_jpeg_quality' is often slow and provides little benefit.
+    # Consider removing it if you need more speed.
+    # image = tf.image.adjust_jpeg_quality(
+    #     image, jpeg_quality=tf.random.uniform([], 90, 100, dtype=tf.int32)
+    # )
     image = tf.clip_by_value(image, -1.0, 1.0)
     return image, label
 
 
-def get_dataset(root_dir, categories=None, mode="train", augment=False, batch_size=32, cache=False):
+def get_dataset(root_dir, categories=None, mode="train", augment=False, batch_size=32, cache=True):
     samples = collect_image_paths(root_dir, mode, categories)
     paths, labels = zip(*samples)
 
     ds = tf.data.Dataset.from_tensor_slices((list(paths), list(labels)))
 
-    # 👇 Parallel image decoding
+    # For training, shuffle the file paths before you do anything else.
+    if mode == "train":
+        ds = ds.shuffle(buffer_size=len(paths))
+
+    # Decode and resize the images in parallel.
     ds = ds.map(image_parser, num_parallel_calls=AUTOTUNE)
 
-    # 👇 Data augmentation (if training mode and requested)
+    # Cache the dataset after loading and resizing. Subsequent epochs will be much faster.
+    if cache:
+        ds = ds.cache()
+
+    # Apply random augmentations after caching.
     if augment and mode == "train":
         ds = ds.map(augmentor, num_parallel_calls=AUTOTUNE)
 
-    ds = ds.cache()
-    #ds = ds.shuffle(buffer_size=4096)
+    # Batch the data and prefetch to keep the GPU fed.
     ds = ds.batch(batch_size)
     ds = ds.prefetch(AUTOTUNE)
 
