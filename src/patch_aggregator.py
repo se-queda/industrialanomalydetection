@@ -1,7 +1,7 @@
 import tensorflow as tf
 
 
-@tf.function(jit_compile=True)
+
 def extract_patches(features, patch_size=3, stride=1):
     B = tf.shape(features)[0]
     C = tf.shape(features)[-1]
@@ -16,7 +16,7 @@ def extract_patches(features, patch_size=3, stride=1):
 
     patches = tf.reshape(patches, [B, -1, patch_size * patch_size * C])
     return patches
-@tf.function(jit_compile=True)
+
 def aggregate(feat_block2, feat_block3):
     patches_b2 = extract_patches(feat_block2, patch_size=3, stride=1)
     patches_b3 = extract_patches(feat_block3, patch_size=3, stride=1)
