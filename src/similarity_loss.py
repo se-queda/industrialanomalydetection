@@ -13,9 +13,13 @@ def compute_similarity(z_bar_np, k=5, alpha=0.5, sigma=1.0):
     omega_batch = []
     nn_idx_batch = []
 
+    # FIX: Ensure the input is float32 before processing
+    z_bar_np = z_bar_np.astype('float32')
+
     for xb in z_bar_np:
         N, D = xb.shape
         index = faiss.IndexFlatL2(D)
+        # The input 'xb' is now guaranteed to be float32
         index.add(xb)
         dists, nn_idx = index.search(xb, k+1)
         dists, nn_idx = dists[:, 1:], nn_idx[:, 1:]

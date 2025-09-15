@@ -1,6 +1,7 @@
 import tensorflow as tf
 import numpy as np
 import time
+import os
 from tqdm import tqdm
 from src.similarity_loss import compute_similarity, relaxed_contrastive_loss
 from src.memorybank import MemoryBank
@@ -51,7 +52,7 @@ def train_step(batch_images, backbone, f_proj, g_proj, student_model, ema_model,
     optimizer.apply_gradients(zip(grads, trainable_vars))
     ema_model.update_teacher()
 
-    return loss, teacher_embeddings
+    return loss
 
 
 def train_one_epoch(
@@ -62,21 +63,13 @@ def train_one_epoch(
         student_model,
         ema_model,
         optimizer,
-        memory_bank=None,
-        coreset_size=None,
 ):
     epoch_loss = []
-
     for batch_images, _, _ in tqdm(train_ds, desc="Training"):
-        loss, teacher_embeddings = train_step(
+        loss = train_step(
             batch_images, backbone, f_proj, g_proj, student_model, ema_model, optimizer
         )
-        if memory_bank is not None:
-            memory_bank.add(teacher_embeddings.numpy())
         epoch_loss.append(loss.numpy())
-
-    if memory_bank is not None:
-        memory_bank.build(coreset_size=coreset_size)
 
     return np.mean(epoch_loss)
 
@@ -94,9 +87,21 @@ def train(
         optimizer,
         epochs=10,
         coreset_size=10000,
+        checkpoint_dir="checkpoints"
 ):
-    memory_bank = MemoryBank(dim=128, use_gpu=True)
+    # --- CHECKPOINTING SETUP ---
+    ckpt = tf.train.Checkpoint(student_model=student_model,
+                               ema_model=ema_model,
+                               optimizer=optimizer)
+    ckpt_manager = tf.train.CheckpointManager(ckpt, checkpoint_dir, max_to_keep=5)
 
+    if ckpt_manager.latest_checkpoint:
+        ckpt.restore(ckpt_manager.latest_checkpoint).expect_partial()
+        print(f"\n[INFO] Restored from checkpoint: {ckpt_manager.latest_checkpoint}")
+    else:
+        print("\n[INFO] Initializing from scratch.")
+
+    # --- MAIN TRAINING LOOP ---
     for epoch in range(epochs):
         start_time = time.time()
         print(f"\n--- EPOCH {epoch + 1}/{epochs} ---")
@@ -109,11 +114,21 @@ def train(
             student_model,
             ema_model,
             optimizer,
-            memory_bank=memory_bank,
-            coreset_size=coreset_size,
         )
 
-        epoch_time = time.time() - start_time
-        print(f"Epoch training time: {epoch_time:.2f} seconds | Average Loss = {avg_loss:.4f}")
+        save_path = ckpt_manager.save()
+        print(f"Epoch training time: {time.time() - start_time:.2f} seconds | Average Loss = {avg_loss:.4f}")
+        print(f"Checkpoint saved at: {save_path}")
+
+    print("\n[INFO] All training epochs complete. Building the final memory bank...")
+
+    # --- FINAL MEMORY BANK BUILD (after all training) ---
+    memory_bank = MemoryBank(dim=128, use_gpu=True)
+    for batch_images, _, _ in tqdm(train_ds, desc="Building Memory Bank"):
+        teacher_embeddings = ema_model(forward_pass(batch_images, backbone, f_proj, g_proj), training=False)
+        memory_bank.add(teacher_embeddings.numpy())
+
+    memory_bank.build(coreset_size=coreset_size)
+    print("[INFO] Memory bank built successfully.")
 
     return memory_bank

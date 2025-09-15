@@ -1,13 +1,11 @@
 import numpy as np
 import faiss
 
+
 class MemoryBank:
     def __init__(self, dim=128, use_gpu=False):
         """
         FAISS-based Memory Bank for anomaly detection.
-        Args:
-            dim: embedding dimension (default 128 from projectors).
-            use_gpu: if True, FAISS runs on GPU.
         """
         self.dim = dim
         self.use_gpu = use_gpu
@@ -16,19 +14,20 @@ class MemoryBank:
 
     def add(self, embeddings):
         """
-        Add embeddings to the memory pool (before coreset selection).
-        Args:
-            embeddings: numpy array of shape (N, D).
+        Add embeddings to the memory pool.
         """
         if isinstance(embeddings, np.ndarray) is False:
             embeddings = embeddings.numpy()
+
+        num_dims = embeddings.ndim
+        if num_dims > 2:
+            embeddings = embeddings.reshape(-1, embeddings.shape[-1])
+
         self.embeddings.append(embeddings.astype("float32"))
 
     def build(self, coreset_size=None):
         """
         Finalize the memory bank.
-        Args:
-            coreset_size: if set, apply greedy coreset sampling to reduce.
         """
         all_embeddings = np.concatenate(self.embeddings, axis=0)
 
@@ -45,16 +44,14 @@ class MemoryBank:
 
         index.add(selected)
         self.index = index
-        self.embeddings = selected  # store for reference
+        self.embeddings = selected
+
+        # --- FIX: Reset the list for the next epoch ---
+        self.embeddings = []
 
     def query(self, queries, k=1):
         """
         Query anomaly scores for embeddings.
-        Args:
-            queries: numpy array (M, D).
-            k: nearest neighbors to retrieve.
-        Returns:
-            dists: (M, k) distances to nearest neighbors in memory.
         """
         if self.index is None:
             raise ValueError("MemoryBank not built yet. Call .build() first.")
@@ -67,14 +64,14 @@ class MemoryBank:
         return dists
 
     def _coreset_sampling(self, data, size):
+        """
+        Perform coreset sampling on the CPU to avoid OOM errors.
+        """
         N, D = data.shape
         data = data.astype("float32")
 
-        # Build FAISS index for all embeddings
+        # Build a temporary FAISS index on the CPU
         index = faiss.IndexFlatL2(D)
-        if self.use_gpu:
-            res = faiss.StandardGpuResources()
-            index = faiss.index_cpu_to_gpu(res, 0, index)
         index.add(data)
 
         # Randomly pick first center
@@ -84,13 +81,11 @@ class MemoryBank:
         min_dists = np.full(N, np.inf, dtype=np.float32)
 
         for _ in range(size - 1):
-            # Update distances to latest chosen center
             last_center = data[idxs[-1]].reshape(1, -1)
-            dists, _ = index.search(last_center, N)  # distances from new center to all points
+            dists, _ = index.search(last_center, N)
             dists = dists.flatten()
             min_dists = np.minimum(min_dists, dists)
 
-            # Pick point farthest from any chosen center
             next_idx = np.argmax(min_dists)
             idxs.append(next_idx)
 

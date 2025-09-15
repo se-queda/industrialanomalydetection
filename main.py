@@ -17,7 +17,7 @@ SAVE_DIR = "production_assets"  # A directory to store your final assets
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 # Using a subset for faster training
-categories = ['bottle', 'cable', 'capsule', 'carpet', 'grid']
+categories = ['toothbrush']
 
 start_time = time.time()
 
