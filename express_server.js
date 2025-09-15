@@ -47,15 +47,18 @@ const upload = multer({ dest: UPLOAD_DIR });
  * inference are propagated as HTTP 500 responses with an error
  * message.
  */
-app.post('/api/scan', upload.single('image'), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: 'No image file provided.' });
+app.post('/api/scan', upload.any(), async (req, res) => {
+  // Accept either 'image' or 'file' as the form field name
+  const files = req.files || [];
+  const file = files.find(f => f.fieldname === 'image' || f.fieldname === 'file') || files[0];
+  if (!file) {
+    return res.status(400).json({ error: "No image file provided. Use form field 'image' or 'file'." });
   }
   try {
     // Prepare form data for FastAPI request
     const form = new FormData();
-    form.append('file', fs.createReadStream(req.file.path), {
-      filename: req.file.originalname,
+    form.append('file', fs.createReadStream(file.path), {
+      filename: file.originalname,
     });
 
     // Forward the file to FastAPI
@@ -66,12 +69,12 @@ app.post('/api/scan', upload.single('image'), async (req, res) => {
     });
 
     // Clean up temporary upload
-    fs.unlink(req.file.path, () => {});
+    fs.unlink(file.path, () => {});
 
     return res.json(response.data);
   } catch (error) {
     // Clean up the file on error
-    fs.unlink(req.file.path, () => {});
+    fs.unlink(file.path, () => {});
     console.error('Error forwarding image to inference service:', error.message);
     return res.status(500).json({ error: 'Inference service call failed.' });
   }
@@ -85,3 +88,5 @@ app.get('/api/health', (_req, res) => {
 app.listen(PORT, () => {
   console.log(`Express server listening on port ${PORT}`);
 });
+
+
