@@ -1,0 +1,9 @@
+
+fastapi
+uvicorn
+tensorflow
+faiss-cpu
+numpy
+pillow
+matplotlib
+scipy
