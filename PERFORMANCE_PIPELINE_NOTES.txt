@@ -1,0 +1,79 @@
+Performance and Pipeline Updates
+================================
+
+Scope: Frontend (Next.js) → Express bridge → FastAPI service
+
+1) FastAPI (Inference service)
+- Fixed NameError on success path: `inference_time` now always defined.
+- Corrected anomaly-map reshape logic to match actual patch grid:
+  - Uses block2 grid (62×62 for 256×256 inputs) instead of feature-map size.
+  - Slices distances to block2 portion before reshaping.
+  - Uses NumPy reshape and resizes to 256×256 for stable heatmaps.
+- Added fallbacks when backbone/projectors or FAISS are missing:
+  - Safe zeros for distances; placeholder heatmap still generated.
+- Mixed precision is enabled (Keras policy `mixed_float16`) as per paper guidance.
+
+Impact
+- Eliminates 4744→4096 reshape errors and failed requests.
+- Predictable latency reporting via `inference_time_ms`.
+
+2) Express Bridge (Node.js)
+- File upload handling hardened:
+  - Switched to `upload.any()` and accept form fields `image` or `file`.
+  - Cleans up temp uploads on both success and error paths.
+- CORS enabled so the Next.js frontend (port 3000) can call Express (port 3001).
+- Error passthrough:
+  - Forwards FastAPI status and body when available; more actionable errors in Postman/clients.
+
+Impact
+- Fewer integration failures due to field-name mismatches.
+- Easier debugging, better client UX.
+
+3) Frontend (Next.js App Router)
+- Unified UI in `frontend/app/page.tsx` with client components and updated metadata.
+- Dark mode now applies to the entire page background (class on `<body>`), with persistence via `localStorage`.
+- Added quality-of-life features:
+  - Drag & drop upload onto the preview card (visual highlight on drag).
+  - Paste-from-clipboard support for images.
+  - Toast notifications (success/error) for quick feedback.
+- Responsiveness and polish:
+  - Preview container scales with `clamp(256px, 60vw, 400px)`.
+  - Gradient buttons, glassy card, smoother spinner/overlay, subtle animations.
+- Performance-minded tweaks:
+  - Health polling reduced to every 30s (was 10s).
+  - `useMemo`/`useCallback` on handlers and config endpoints.
+  - Lazy loading for preview/heatmap images.
+  - Theming and background handled via CSS variables; no heavy runtime libs.
+- Configurable endpoints:
+  - Reads `NEXT_PUBLIC_EXPRESS_URL` and `NEXT_PUBLIC_FASTAPI_URL` (falls back to localhost).
+
+Impact
+- Faster perceived performance via fewer re-renders and reduced polling.
+- Smoother interactions; more “product” feel with minimal bundle overhead.
+
+4) Build/Encoding and Stability Fixes
+- Resolved Windows PowerShell UTF‑16 encoding issue by saving key files as UTF‑8.
+- Removed duplicate component body in `page.tsx` that caused a second "use client" directive mid-file.
+- Updated global styles (`globals.css`) with theme variables and gradient background; dark theme covers full viewport.
+
+How to Run (recap)
+- FastAPI: `uvicorn fastapi_app:app --reload --port 8000`
+- Express: `node express_server.js`
+- Next.js: `cd frontend && npm run dev` then open `http://localhost:3000`
+- Optional env:
+  - `NEXT_PUBLIC_EXPRESS_URL=http://localhost:3001`
+  - `NEXT_PUBLIC_FASTAPI_URL=http://localhost:8000`
+
+Suggested Next Improvements (optional)
+- Express
+  - Add `compression` middleware (gzip) and ETag/caching for responses.
+  - Increase fileSize limit and basic mime-type validation in Multer.
+- FastAPI
+  - Cache headers for `/static/heatmaps/*`; optionally serve via CDN if external.
+  - Expose `/health` to match Express for symmetric checks.
+  - If GPU FAISS available, ensure index is moved to GPU (fallback already present).
+- Frontend
+  - Persist last result in URL or localStorage (for reloads).
+  - Add skeleton placeholders while scanning.
+  - Gate large images with client-side downscaling before upload to reduce I/O.
+
