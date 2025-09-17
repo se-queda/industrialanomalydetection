@@ -1,12 +1,13 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
 
 type ScanResult = {
   anomaly_score: number;
+  threshold: number;
   is_anomaly: boolean;
-  heatmap_url: string;
+  heatmap_url: string | null;
   inference_time_ms: number;
 };
 
@@ -20,6 +21,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+  const [generateHeatmap, setGenerateHeatmap] = useState(false);
 
   // Configurable endpoints via env, with localhost fallbacks
   const EXPRESS_URL = useMemo(() => process.env.NEXT_PUBLIC_EXPRESS_URL ?? "http://localhost:3001", []);
@@ -66,7 +68,10 @@ export default function Home() {
       const formData = new FormData();
       // Accepts either 'image' or 'file' on the Express side
       formData.append("image", file);
-      const res = await axios.post<ScanResult>(`${EXPRESS_URL}/api/scan`, formData, {
+      const endpoint = generateHeatmap
+        ? `${EXPRESS_URL}/api/scan?generate_heatmap=true`
+        : `${EXPRESS_URL}/api/scan`;
+      const res = await axios.post<ScanResult>(endpoint, formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
       setResult(res.data);
@@ -78,7 +83,7 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
-  }, [file, EXPRESS_URL]);
+  }, [file, EXPRESS_URL, generateHeatmap]);
 
   const handleReset = useCallback(() => {
     if (previewURL) URL.revokeObjectURL(previewURL);
@@ -164,16 +169,23 @@ export default function Home() {
         </button>
       </header>
       <h1 className="title">Industrial Anomaly Scanner</h1>
-      <p className="subtitle">Upload, drop, or paste an image to generate an anomaly heatmap.</p>
-
+      <p className="subtitle">Upload, drop, or paste an image to inspect for anomalies (toggle heatmap if needed).</p>
       <div className="controls">
         <label className="upload-label">
           Select Image
           <input type="file" accept="image/*" onChange={handleFileChange} />
         </label>
+        <label className="heatmap-checkbox">
+          <input
+            type="checkbox"
+            checked={generateHeatmap}
+            onChange={(event) => setGenerateHeatmap(event.target.checked)}
+          />
+          Generate heatmap
+        </label>
         {file && !result && (
           <button className="scan-button" onClick={handleScan} disabled={loading}>
-            {loading ? "Scanning…" : "Scan Image"}
+            {loading ? "Scanning." : "Scan Image"}
           </button>
         )}
         {result && (
@@ -214,8 +226,20 @@ export default function Home() {
       {result && (
         <div className="results">
           <div className={anomalyFlagClass}>{result.is_anomaly ? "Anomaly Detected" : "Normal"}</div>
-          <div>Score: {result.anomaly_score.toFixed(4)}</div>
-          <div>Inference: {result.inference_time_ms.toFixed(2)} ms</div>
+          <div className="score-grid">
+            <div className="metric-card primary">
+              <span className="metric-label">Anomaly Score</span>
+              <span className="metric-value">{result.anomaly_score.toFixed(4)}</span>
+            </div>
+            <div className="metric-card">
+              <span className="metric-label">Threshold</span>
+              <span className="metric-value">{result.threshold.toFixed(4)}</span>
+            </div>
+            <div className="metric-card">
+              <span className="metric-label">Inference Time</span>
+              <span className="metric-value">{result.inference_time_ms.toFixed(2)} ms</span>
+            </div>
+          </div>
         </div>
       )}
 
@@ -240,6 +264,15 @@ export default function Home() {
         .upload-label:hover { transform: translateY(-1px); box-shadow: 0 12px 24px rgba(37,99,235,0.30); }
         .upload-label:active { transform: translateY(0); }
         .upload-label input { display: none; }
+        .heatmap-checkbox { display:flex; align-items:center; gap:0.45rem; color: var(--fg); font-size: .9rem; }
+        .heatmap-checkbox input { width: 16px; height: 16px; }
+        .score-grid { display:flex; flex-wrap:wrap; gap:1rem; justify-content:center; margin-top:0.75rem; }
+        .metric-card { min-width:160px; padding:0.75rem 1rem; border-radius:14px; background: var(--card); border:1px solid var(--border); box-shadow: var(--shadow); display:flex; flex-direction:column; align-items:center; gap:0.35rem; transition: transform .15s ease, box-shadow .2s ease; }
+        .metric-card.primary { background: linear-gradient(135deg, var(--accent), #7c3aed); color:#fff; border:none; box-shadow: 0 12px 24px rgba(37,99,235,0.25); }
+        .metric-card:hover { transform: translateY(-2px); box-shadow: 0 12px 24px rgba(0,0,0,0.12); }
+        .metric-label { font-size:0.75rem; text-transform:uppercase; letter-spacing:0.08em; color: var(--muted); }
+        .metric-card.primary .metric-label { color: rgba(255,255,255,0.8); }
+        .metric-value { font-size:1.4rem; font-weight:600; }
         .scan-button, .reset-button, .toggle-dark { padding: .65rem 1rem; border: none; border-radius: 10px; cursor: pointer; font-size: .95rem; transition: transform .15s ease, box-shadow .2s ease, opacity .3s ease; }
         .scan-button { color:#fff; background: linear-gradient(135deg, var(--accent), #7c3aed); box-shadow: 0 10px 20px rgba(37,99,235,0.25); }
         .scan-button:hover:not([disabled]) { transform: translateY(-1px); box-shadow: 0 12px 24px rgba(37,99,235,0.35); }
@@ -274,3 +307,4 @@ export default function Home() {
     </div>
   );
 }
+

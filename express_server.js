@@ -8,6 +8,7 @@ const multer = require('multer');
 const axios = require('axios');
 const fs = require('fs');
 const FormData = require('form-data');
+const { URL } = require('url');
 
 // Configuration
 const PORT = process.env.PORT || 3001;
@@ -35,7 +36,13 @@ app.post('/api/scan', upload.any(), async (req, res) => {
     const form = new FormData();
     form.append('file', fs.createReadStream(file.path), { filename: file.originalname });
 
-    const response = await axios.post(FASTAPI_URL, form, {
+    const url = new URL(FASTAPI_URL);
+    const generateHeatmap = req.query.generate_heatmap === 'true' || req.query.generate_heatmap === '1' || req.query.heatmap === 'true' || req.query.heatmap === '1';
+    if (generateHeatmap) {
+      url.searchParams.set('generate_heatmap', 'true');
+    }
+
+    const response = await axios.post(url.toString(), form, {
       headers: form.getHeaders(),
       timeout: 30000,
     });

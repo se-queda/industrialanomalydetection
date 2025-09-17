@@ -1,8 +1,0 @@
-# Performance Log
-# Format: ISO_TIMESTAMP | DESCRIPTION | TOTAL_SCRIPT_TIME_SECONDS(approx)
-2025-09-16T00:00:00Z | Baseline Kaggle run (no optimizations) | 218.99
-2025-09-16T00:05:00Z | Kaggle run with dataset prefetch tweaks | 220.93
-2025-09-16T00:15:00Z | Kaggle run with dataset tweaks + forward_pass tf.function | 343.66 (epoch1 104.35s, epoch2 91.70s)
-2025-09-16T00:30:00Z | Kaggle run with FAISS optimisations + GPU memory bank | 454.62 (epoch1 102.26s, epoch2 89.18s, memory_bank 131.08s)
-2025-09-16T01:10:00Z | Kaggle run after TF-based eval blur & mixed precision fixes | 535.06 (epoch1 115.16s, epoch2 103.97s, memory_bank 158.20s)
-2025-09-17T01:30:00Z | Kaggle run w/ GPU FAISS + MirroredStrategy |  ??? (epoch1 92s, epoch2 72s, memory_bank TBD)

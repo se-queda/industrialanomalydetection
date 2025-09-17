@@ -26,13 +26,14 @@ will return a placeholder response until the files are supplied.
 import os
 import io
 import time
+import threading
 from typing import Optional
 
 import numpy as np
 from PIL import Image
 import faiss
 import tensorflow as tf
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from scipy.ndimage import gaussian_filter
@@ -60,9 +61,11 @@ except ImportError as exc:
 # Constants
 IMG_SIZE = 256
 SAVE_DIR = "production_assets"
-STUDENT_MODEL_WEIGHTS = os.path.join(SAVE_DIR, "student_model.h5")
+STUDENT_MODEL_WEIGHT_CANDIDATES = ["student_model.h5", "student_model.weights.h5", "student_model.weights"]
 MEMORY_BANK_INDEX = os.path.join(SAVE_DIR, "memory_bank.index")
 HEATMAP_DIR = os.path.join(SAVE_DIR, "heatmaps")
+CONFIG_FILE = os.path.join(SAVE_DIR, "config.json")
+DEFAULT_ANOMALY_THRESHOLD = 0.5
 
 # Create directories if they do not exist
 os.makedirs(SAVE_DIR, exist_ok=True)
@@ -91,6 +94,62 @@ f_proj = None    # type: Optional[tf.keras.layers.Layer]
 g_proj = None    # type: Optional[tf.keras.layers.Layer]
 student_model = None  # type: Optional[tf.keras.Model]
 memory_bank_index = None  # type: Optional[faiss.Index]
+anomaly_threshold = DEFAULT_ANOMALY_THRESHOLD
+threshold_loaded = False
+
+_asset_lock = threading.Lock()
+
+
+def assets_loaded() -> bool:
+    return all(obj is not None for obj in (backbone, f_proj, g_proj, student_model, memory_bank_index))
+
+
+def ensure_assets_loaded() -> None:
+    global threshold_loaded
+
+    if assets_loaded() and threshold_loaded:
+        return
+    with _asset_lock:
+        if not assets_loaded():
+            load_assets()
+        if not threshold_loaded:
+            load_threshold()
+
+
+
+def load_threshold() -> None:
+    global anomaly_threshold, threshold_loaded
+
+    env_value = os.getenv('IMAGE_ANOMALY_THRESHOLD') or os.getenv('ANOMALY_THRESHOLD')
+    if env_value:
+        try:
+            anomaly_threshold = float(env_value)
+            threshold_loaded = True
+            print(f"[INFO] Using anomaly threshold from environment: {anomaly_threshold}")
+            return
+        except ValueError:
+            print(f"[WARN] Invalid anomaly threshold environment value: {env_value}")
+
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as fh:
+                data = json.load(fh)
+            if isinstance(data, dict) and 'anomaly_threshold' in data:
+                anomaly_threshold = float(data['anomaly_threshold'])
+                threshold_loaded = True
+                print(f"[INFO] Using anomaly threshold from config file: {anomaly_threshold}")
+                return
+        except Exception as exc:
+            print(f"[WARN] Failed to read anomaly threshold from {CONFIG_FILE}: {exc}")
+
+    anomaly_threshold = DEFAULT_ANOMALY_THRESHOLD
+    threshold_loaded = True
+    print(f"[INFO] Using default anomaly threshold: {anomaly_threshold}")
+
+
+def get_anomaly_threshold() -> float:
+    return anomaly_threshold
+
 
 
 def load_assets():
@@ -101,7 +160,7 @@ def load_assets():
     service can still start, but calls to `/infer` will return a
     placeholder response until the assets are present.
     """
-    global backbone, f_proj, g_proj, student_model, memory_bank_index
+    global backbone, f_proj, g_proj, student_model, memory_bank_index, threshold_loaded
 
     # Build model components
     backbone = backbone_model()
@@ -115,16 +174,24 @@ def load_assets():
     ])
 
     # Load weights if they exist
-    if os.path.exists(STUDENT_MODEL_WEIGHTS):
+    weights_path = None
+    for candidate in STUDENT_MODEL_WEIGHT_CANDIDATES:
+        candidate_path = os.path.join(SAVE_DIR, candidate)
+        if os.path.exists(candidate_path):
+            weights_path = candidate_path
+            break
+
+    if weights_path:
         try:
-            student_model.load_weights(STUDENT_MODEL_WEIGHTS)
-            print(f"[INFO] Loaded student model weights from {STUDENT_MODEL_WEIGHTS}")
+            student_model.load_weights(weights_path)
+            print(f"[INFO] Loaded student model weights from {weights_path}")
         except Exception as exc:
-            print(f"[WARN] Failed to load model weights: {exc}")
+            print(f"[WARN] Failed to load model weights from {weights_path}: {exc}")
     else:
+        checked = ", ".join(STUDENT_MODEL_WEIGHT_CANDIDATES)
         print(
-            f"[WARN] Student model weights not found at {STUDENT_MODEL_WEIGHTS}. "
-            "Requests will return a placeholder response until weights are provided."
+            "[WARN] Student model weights not found. "
+            f"Checked filenames: {checked}. Requests will return a placeholder response until weights are provided."
         )
 
     # Load FAISS memory bank index if it exists
@@ -149,6 +216,9 @@ def load_assets():
             f"[WARN] Memory bank index not found at {MEMORY_BANK_INDEX}. "
             "Requests will return a placeholder response until the index is provided."
         )
+
+    threshold_loaded = False
+    load_threshold()
 
 
 @tf.function
@@ -183,7 +253,7 @@ def generate_heatmap(img_resized, anomaly_map_smoothed, heatmap_filename):
     plt.close()
 
 
-def inspect_array(image_array: np.ndarray) -> dict:
+def inspect_array(image_array: np.ndarray, create_heatmap: bool = False) -> dict:
     """Run the full inspection pipeline on a single image array.
 
     This function mirrors the logic of `inspect_image` in the original
@@ -191,6 +261,8 @@ def inspect_array(image_array: np.ndarray) -> dict:
     reading from disk.  It returns a dictionary of results similar to
     the CLI implementation.
     """
+    ensure_assets_loaded()
+
     # Preprocess: resize and normalise to [-1, 1]
     img = Image.fromarray(image_array).convert('RGB')
     img_resized = img.resize((IMG_SIZE, IMG_SIZE))
@@ -240,6 +312,8 @@ def inspect_array(image_array: np.ndarray) -> dict:
     anomaly_map_smoothed = gaussian_filter(anomaly_map[0, :, :, 0], sigma=4)
 
     image_level_score = float(np.max(anomaly_map_smoothed))
+    threshold = get_anomaly_threshold()
+    is_anomaly = bool(image_level_score >= threshold)
 
     # Measure total inference time if not already set in fallback path
     try:
@@ -247,15 +321,18 @@ def inspect_array(image_array: np.ndarray) -> dict:
     except NameError:
         inference_time = time.time() - start_time
 
-    # Save heatmap image to static directory
-    heatmap_name = f"heatmap_{int(time.time()*1000)}.png"
-    heatmap_path = os.path.join(HEATMAP_DIR, heatmap_name)
-    generate_heatmap(img_resized, anomaly_map_smoothed, heatmap_path)
+    heatmap_url = None
+    if create_heatmap:
+        heatmap_name = f"heatmap_{int(time.time()*1000)}.png"
+        heatmap_path = os.path.join(HEATMAP_DIR, heatmap_name)
+        generate_heatmap(img_resized, anomaly_map_smoothed, heatmap_path)
+        heatmap_url = f"/static/heatmaps/{heatmap_name}"
 
     return {
         "anomaly_score": image_level_score,
-        "is_anomaly": bool(image_level_score > 0.5),  # Example threshold
-        "heatmap_url": f"/static/heatmaps/{heatmap_name}",
+        "threshold": threshold,
+        "is_anomaly": is_anomaly,
+        "heatmap_url": heatmap_url,
         "inference_time_ms": round(inference_time * 1000, 2),
     }
 
@@ -267,7 +344,7 @@ def on_startup() -> None:
 
 
 @app.post("/infer")
-async def infer(file: UploadFile = File(...)):
+async def infer(generate_heatmap: bool = Query(False), file: UploadFile = File(...)):
     """Run ReConPatch inference on an uploaded image.
 
     The request body must include an `image` file (multipart/form-data).
@@ -277,7 +354,8 @@ async def infer(file: UploadFile = File(...)):
     a placeholder response is returned.
     """
     # Ensure models are loaded
-    if backbone is None or f_proj is None or g_proj is None or student_model is None:
+    ensure_assets_loaded()
+    if not assets_loaded():
         raise HTTPException(
             status_code=500,
             detail="Model architecture is not initialised. Check server logs."
@@ -293,7 +371,7 @@ async def infer(file: UploadFile = File(...)):
 
     # Run the inspection
     try:
-        result = inspect_array(image_array)
+        result = inspect_array(image_array, create_heatmap=generate_heatmap)
     except Exception as exc:
         # Provide a generic error message to the client but log the specific
         # exception in the server logs for debugging
@@ -301,5 +379,4 @@ async def infer(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail="Inference failed. Check server logs for details.")
 
     return JSONResponse(content=result)
-
 
